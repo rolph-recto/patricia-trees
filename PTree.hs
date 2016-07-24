@@ -5,9 +5,11 @@
 
 import Prelude hiding (lookup)
 import qualified Data.List as L
+import qualified Data.Map.Strict as M
 import Data.Either
 import Control.Monad
 import Control.Monad.State
+import Control.Monad.Reader
 
 type Key k = [k]
 type PChild k v = ([k], PTree k v)
@@ -87,10 +89,16 @@ insertWith f key val (PNode children) =
                         let child2 = (keySuf, PLeaf val) in
                         ((keyPre, PNode [child1, child2]), True)
 
+-- insert multiple entries at once
+insertsWith :: Eq k => ReplPolicy v -> [(Key k, v)] -> PTree k v -> PTree k v
+insertsWith f entries t = foldl (flip $ uncurry $ insertWith f) t entries
 
 -- insert with replacement policy: clobber old value
 insert :: Eq k => Key k -> v -> PTree k v -> PTree k v
-insert = insertWith (\x _ -> x)
+insert = insertWith (flip const)
+
+inserts :: Eq k => [(Key k, v)] -> PTree k v -> PTree k v
+inserts = insertsWith (flip const)
 
 -- find value, if any, associated with key
 lookup :: Eq k => Key k -> PTree k v -> Maybe v
@@ -114,13 +122,34 @@ lookup key t =
             then mapM_ (lookupChild keySuf) children
             else return ()
 
+toMap :: Ord k => PTree k v -> M.Map (Key k) v
+toMap tree = execState (runReaderT (toMap_ tree) []) M.empty
+  where toMap_ :: Ord k => PTree k v -> ReaderT (Key k) (State (M.Map (Key k) v)) ()
+        toMap_ (PLeaf val) = do
+          key <- ask
+          m <- lift get
+          lift $ put (M.insert key val m)
+        toMap_ (PNode children) = do
+          forM_ children $ \(ckey,ctree) -> local (++ ckey) (toMap_ ctree)
+
+-- combine two patricia trees together
+-- do this by serializing one of the trees into a map
+-- and then inserting all the entries into the other tree
+meld :: Ord k => PTree k v -> PTree k v -> PTree k v
+meld a b = inserts (M.toList $ toMap b) a
+
 main = do
-  let pairs = [("actor",1),("acts",2),("acting",3),("act",4),("act",100),("beam",5)]
-  let tree = foldr (uncurry insert) empty pairs
+  let pairs = [("actor",1),("acts",2),("acting",3),("act",4),("beam",5),("act",100)]
+  let tree = inserts pairs empty
   print tree
   print $ lookup "acting" tree
   print $ lookup "act" tree
   print $ lookup "actoring" tree
+  print $ toMap tree
+  let pairs2 = [("act",1000),("quarry",6),("zebra",7),("quagmire",8)]
+  let tree2  = foldr (uncurry insert) empty pairs2
+  print tree2
+  print (tree `meld` tree2)
 
 
       
